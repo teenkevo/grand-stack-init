@@ -1,0 +1,109 @@
+#has only container configs that are applicable to prod environment
+version: "3"
+services:
+  db_live_prod:
+    image: neo4j:4.3
+    ports:
+      - "7474:7474"
+      - "7473:7473"
+      - "7687:7687"
+    volumes:
+      # data volume to persist neo4j data on host
+      - ./docker-deploy/neo4j/data:/var/lib/neo4j/data
+
+      # the encryption cert files in the mounted volume "/docker-deploy/neo4j
+      # /certificates" are symlinks on the host machine. 
+      - ./docker-deploy/neo4j/certificates:/var/lib/neo4j/certificates
+
+      # The symlinks have to be mounted in the container otherwise they will point
+      # to non-existent files in the db container.
+      - /home/circleci/learn-app/docker-deploy/client-nginx/live-production/certbot/conf/live/app.com/fullchain.pem:/home/circleci/learn-app/docker-deploy/client-nginx/live-production/certbot/conf/live/app.com/fullchain.pem
+      - /home/circleci/learn-app/docker-deploy/client-nginx/live-production/certbot/conf/live/app.com/privkey.pem:/home/circleci/learn-app/docker-deploy/client-nginx/live-production/certbot/conf/live/app.com/privkey.pem
+    
+    # the container is started as circleci user (1001).
+    # this user has permissions to access the mounted volume.
+    user: 1001:1001
+    environment:
+      - NEO4J_AUTH=neo4j/letmein # TODO: make more secure after beta
+      - NEO4JLABS_PLUGINS=["graph-data-science", "apoc"]
+      - NEO4J_dbms_security_procedures_allowlist=gds.*, apoc.*
+      - NEO4J_dbms_security_procedures_unrestricted=gds.*, apoc.*
+      - NEO4J_dbms_allow__upgrade=true
+      # other SSL requirements
+      - NEO4J_dbms_default__listen__address=0.0.0.0
+      - NEO4J_dbms_default__advertised__address=www.app.com
+      #  Https SSL configuration
+      - NEO4J_dbms_connector_http_enabled=false
+      - NEO4J_dbms_connector_https_enabled=true
+      - NEO4J_dbms_ssl_policy_https_enabled=true
+      - NEO4J_dbms_ssl_policy_https_client__auth=NONE
+      - NEO4J_dbms_ssl_policy_https_base__directory=/var/lib/neo4j/certificates/https
+      - NEO4J_dbms_ssl_policy_https_private__key=/var/lib/neo4j/certificates/https/neo4j.key
+      - NEO4J_dbms_ssl_policy_https_public__certificate=/var/lib/neo4j/certificates/https/neo4j.cert
+      #  Bolt SSL configuration
+      - NEO4J_dbms_connector_bolt_tls__level=REQUIRED
+      - NEO4J_dbms_ssl_policy_bolt_enabled=true
+      - NEO4J_dbms_ssl_policy_bolt_client__auth=NONE
+      - NEO4J_dbms_ssl_policy_bolt_base__directory=/var/lib/neo4j/certificates/bolt
+      - NEO4J_dbms_ssl_policy_bolt_private__key=/var/lib/neo4j/certificates/bolt/neo4j.key
+      - NEO4J_dbms_ssl_policy_bolt_public__certificate=/var/lib/neo4j/certificates/bolt/neo4j.cert
+    networks:
+      - prod-network
+
+  api_live_prod:
+    build:
+      context: .
+      dockerfile: ./docker-deploy/server/live-production/Dockerfile
+    ports:
+      - 5000:5000
+    environment:
+      - DOCKER_NEO4J_URI=bolt+ssc://db_live_prod:7687
+      - DOCKER_NEO4J_USER=neo4j 
+      - DOCKER_NEO4J_PASSWORD=letmein 
+    env_file:
+      - ./server/.env
+    links:
+      - db_live_prod
+    depends_on:
+      - db_live_prod
+    networks:
+      - prod-network
+
+  ui_live_prod:
+    build:
+      context: .
+      dockerfile: ./docker-deploy/client-nginx/live-production/Dockerfile
+      args:
+        - REACT_APP_GRAPHQL_URI=/graphql 
+        - REACT_APP_AUTH0_DOMAIN=app-tenant.auth0.com 
+        - REACT_APP_AUTH0_CLIENT_ID=app-client-id
+        - REACT_APP_AUTH0_AUDIENCE=https://app-audience.io
+        - REACT_APP_AUTH0_ROLES_NAMESPACE=http://app-audience/roles
+    ports:
+      - 80:80
+      - 443:443
+    volumes:
+      - ./docker-deploy/client-nginx/live-production:/etc/nginx/conf.d
+      - ./docker-deploy/client-nginx/live-production/dhparam:/etc/nginx/dhparam
+      - ./docker-deploy/client-nginx/live-production/certbot/conf:/etc/letsencrypt
+      - ./docker-deploy/client-nginx/live-production/certbot/www:/var/www/certbot
+    links:
+      - api_live_prod
+    depends_on:
+      - api_live_prod
+    networks:
+      - prod-network
+    command: "/bin/sh -c 'while :; do sleep 6h & wait $${!}; nginx -s reload; done & nginx -g \"daemon off;\"'"
+
+  certbot:
+    image: certbot/certbot
+    restart: unless-stopped
+    volumes:
+      - ./docker-deploy/client-nginx/live-production/certbot/conf:/etc/letsencrypt
+      - ./docker-deploy/client-nginx/live-production/certbot/www:/var/www/certbot
+      - ./docker-deploy/client-nginx/live-production/certbot/logs:/var/log/letsencrypt
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+
+networks:
+  prod-network:
+    driver: bridge

@@ -1,0 +1,21 @@
+.vscode
+
+# uncomment the line below when you start working on your project
+# **/.env 
+
+.history
+
+# Local Netlify folder
+.netlify
+
+# neo4j data mount on host
+data
+
+# certbot folder with SSL stuff
+certbot
+
+# neo4j SSL folders
+bolt
+https
+cluster
+
